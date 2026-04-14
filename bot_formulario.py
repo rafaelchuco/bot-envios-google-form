@@ -287,6 +287,11 @@ def click_choice(locator, answer: str) -> bool:
 
 def fill_choice(block, answer: str) -> None:
     if click_choice(block, answer):
+        # Si se elige "Otros:", Google Forms suele exigir un texto adicional.
+        if normalize_text(answer).startswith("otros"):
+            other_field = block.locator('input[type="text"]')
+            if other_field.count() > 0:
+                other_field.first.fill("Otro")
         return
 
     raise SystemExit(f"No pude seleccionar la opción '{answer}'.")
@@ -321,6 +326,74 @@ def fill_form(page, answers: dict[str, Any]) -> None:
             fill_text(block, answer)
         else:
             raise SystemExit(f"Tipo de pregunta no soportado: {question.kind}")
+
+
+def list_button_labels(page) -> list[str]:
+    labels: list[str] = []
+    buttons = page.get_by_role("button")
+    for index in range(buttons.count()):
+        button = buttons.nth(index)
+        label = (button.get_attribute("aria-label") or "").strip()
+        if not label:
+            try:
+                label = button.inner_text(timeout=800).strip()
+            except PlaywrightTimeoutError:
+                label = ""
+        if label:
+            labels.append(label)
+    return labels
+
+
+def click_submit_or_next(page) -> None:
+    submit_pattern = re.compile(r"^\s*(Enviar|Submit|Send)\s*$", re.IGNORECASE)
+    next_pattern = re.compile(r"^\s*(Siguiente|Next)\s*$", re.IGNORECASE)
+
+    for _ in range(5):
+        submit_button = page.get_by_role("button", name=submit_pattern)
+        if submit_button.count() > 0:
+            submit_button.first.click(timeout=15000)
+            return
+
+        next_button = page.get_by_role("button", name=next_pattern)
+        if next_button.count() > 0:
+            next_button.first.click(timeout=15000)
+            page.wait_for_load_state("networkidle")
+            continue
+
+        break
+
+    labels = list_button_labels(page)
+    labels_preview = ", ".join(sorted(set(labels))) if labels else "ninguno"
+    raise SystemExit(
+        "No encontré un botón de envío. "
+        f"Botones detectados: {labels_preview}"
+    )
+
+
+def wait_submission_confirmation(page) -> None:
+    try:
+        page.wait_for_url(re.compile(r"/formResponse"), timeout=15000)
+        return
+    except PlaywrightTimeoutError:
+        pass
+
+    confirmation_patterns = (
+        re.compile(r"se registr[oó] tu respuesta", re.IGNORECASE),
+        re.compile(r"gracias", re.IGNORECASE),
+        re.compile(r"your response has been recorded", re.IGNORECASE),
+    )
+    for pattern in confirmation_patterns:
+        locator = page.get_by_text(pattern)
+        try:
+            locator.first.wait_for(timeout=5000)
+            return
+        except PlaywrightTimeoutError:
+            continue
+
+    raise SystemExit(
+        "No pude confirmar que el formulario se haya enviado. "
+        "Revisa si el formulario requiere campos adicionales."
+    )
 
 
 def extract_answers(response: dict[str, Any]) -> dict[str, Any]:
@@ -481,8 +554,9 @@ def main() -> None:
                 page = browser.new_page(viewport={"width": 1440, "height": 1800})
                 page.goto(args.url, wait_until="networkidle")
                 fill_form(page, answers)
-                page.get_by_role("button", name=re.compile(r"^Enviar$", re.IGNORECASE)).click()
+                click_submit_or_next(page)
                 page.wait_for_load_state("networkidle")
+                wait_submission_confirmation(page)
                 page.close()
 
                 print(f"[{iteration}/{args.submit_count}] formulario enviado")
