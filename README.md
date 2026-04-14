@@ -37,6 +37,12 @@ Enviar 200 formularios automáticamente:
 /opt/homebrew/bin/python3 bot_formulario.py --submit --submit-count 200
 ```
 
+Enviar 200 formularios manteniendo mayoría similar y una minoría alternativa (80/20):
+
+```bash
+/opt/homebrew/bin/python3 bot_formulario.py --submit --submit-count 200 --majority-ratio 0.8 --headless
+```
+
 Enviar 200 formularios con pausa de 1.5 segundos entre cada envío:
 
 ```bash
@@ -47,6 +53,12 @@ Simular 200 respuestas sin abrir ni enviar el formulario:
 
 ```bash
 /opt/homebrew/bin/python3 bot_formulario.py --simulate 200
+```
+
+Simular 200 respuestas con mayoría parecida y una minoría alternativa (80/20):
+
+```bash
+/opt/homebrew/bin/python3 bot_formulario.py --simulate 200 --majority-ratio 0.8
 ```
 
 Guardar la simulación en otro archivo:

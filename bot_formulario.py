@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import random
 import re
 import time
 import unicodedata
@@ -114,6 +115,14 @@ QUESTIONS: tuple[QuestionSpec, ...] = (
         prompt="¿Qué te gustaría que tenga esta plataforma para ayudarte mejor?",
         kind="text",
     ),
+)
+
+TEXT_VARIANTS: tuple[str, ...] = (
+    "Me gustaría que incluya recomendaciones personalizadas y ejemplos reales de campo laboral.",
+    "Sería útil tener una guía clara por etapas y sugerencias según mis fortalezas.",
+    "Me ayudaría que muestre carreras afines y rutas de estudio concretas.",
+    "Quisiera que integre test dinámicos y seguimiento de avance personal.",
+    "Me serviría ver opciones de becas, cursos y proyección salarial por carrera.",
 )
 
 
@@ -321,6 +330,49 @@ def extract_answers(response: dict[str, Any]) -> dict[str, Any]:
     return answers
 
 
+def diversify_answers(
+    answers: dict[str, Any],
+    *,
+    majority_ratio: float,
+    rng: random.Random,
+) -> dict[str, Any]:
+    """Mantiene una mayoría de respuestas base y cambia una minoría para variar."""
+    diversified: dict[str, Any] = {}
+
+    for question in QUESTIONS:
+        raw_answer = answers.get(question.key)
+        base_answer = choose_answer(question, raw_answer)
+
+        if rng.random() <= majority_ratio:
+            diversified[question.key] = base_answer
+            continue
+
+        if question.kind == "text":
+            alternatives = [text for text in TEXT_VARIANTS if normalize_text(text) != normalize_text(base_answer)]
+        else:
+            alternatives = [
+                option
+                for option in question.options
+                if normalize_text(option) != normalize_text(base_answer)
+            ]
+
+        diversified[question.key] = rng.choice(alternatives) if alternatives else base_answer
+
+    return diversified
+
+
+def generate_answers(
+    model: str,
+    persona: str,
+    *,
+    majority_ratio: float,
+    rng: random.Random,
+) -> dict[str, Any]:
+    response = ollama_chat(model, persona)
+    answers = extract_answers(response)
+    return diversify_answers(answers, majority_ratio=majority_ratio, rng=rng)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rellena un Google Form con respuestas generadas por Ollama.")
     parser.add_argument("--url", default=FORM_URL, help="URL del formulario")
@@ -358,6 +410,21 @@ def main() -> None:
         default="simulacion_respuestas.jsonl",
         help="Archivo de salida para --simulate",
     )
+    parser.add_argument(
+        "--majority-ratio",
+        type=float,
+        default=1.0,
+        help=(
+            "Porcentaje de respuestas que se mantienen como la respuesta base. "
+            "Ejemplo: 0.8 = 80%% base y 20%% alternativas."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Semilla opcional para reproducir la variación aleatoria",
+    )
     args = parser.parse_args()
 
     if args.simulate < 0:
@@ -369,6 +436,9 @@ def main() -> None:
     if args.submit_delay < 0:
         raise SystemExit("--submit-delay debe ser 0 o mayor.")
 
+    if not (0 <= args.majority_ratio <= 1):
+        raise SystemExit("--majority-ratio debe estar entre 0 y 1.")
+
     if args.simulate and args.submit:
         raise SystemExit("No se puede combinar --simulate con --submit.")
 
@@ -378,13 +448,19 @@ def main() -> None:
     if not args.submit and args.submit_delay != 0:
         raise SystemExit("--submit-delay solo se puede usar junto con --submit.")
 
+    rng = random.Random(args.seed)
+
     if args.simulate:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", encoding="utf-8") as handle:
             for iteration in range(1, args.simulate + 1):
-                response = ollama_chat(args.model, args.persona)
-                answers = extract_answers(response)
+                answers = generate_answers(
+                    args.model,
+                    args.persona,
+                    majority_ratio=args.majority_ratio,
+                    rng=rng,
+                )
                 record = {"iteration": iteration, "answers": answers}
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -395,8 +471,12 @@ def main() -> None:
         browser = playwright.chromium.launch(headless=args.headless)
         if args.submit:
             for iteration in range(1, args.submit_count + 1):
-                response = ollama_chat(args.model, args.persona)
-                answers = extract_answers(response)
+                answers = generate_answers(
+                    args.model,
+                    args.persona,
+                    majority_ratio=args.majority_ratio,
+                    rng=rng,
+                )
 
                 page = browser.new_page(viewport={"width": 1440, "height": 1800})
                 page.goto(args.url, wait_until="networkidle")
@@ -411,8 +491,12 @@ def main() -> None:
 
             print(f"Envío completado: {args.submit_count} formularios enviados.")
         else:
-            response = ollama_chat(args.model, args.persona)
-            answers = extract_answers(response)
+            answers = generate_answers(
+                args.model,
+                args.persona,
+                majority_ratio=args.majority_ratio,
+                rng=rng,
+            )
 
             page = browser.new_page(viewport={"width": 1440, "height": 1800})
             page.goto(args.url, wait_until="networkidle")
